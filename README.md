@@ -1,18 +1,22 @@
-# Roblox Creator Store Uploader
+# Roblox Creator Store Uploader & TUI
 
-A robust, automated toolchain for uploading assets (Images, Decals, Audio, Models) to the Roblox Creator Store. It includes automatic preprocessing via Pixelfix, intelligent deduplication, EXIF metadata extraction, and state recovery for mass uploads.
+A robust, automated toolchain and interactive **Terminal User Interface (TUI)** for uploading assets (Images, Decals, Audio, Models, Videos) to the Roblox Creator Store. Built with **Textual** (OpenTUI ecosystem), it features automatic preprocessing via Pixelfix, EXIF metadata extraction, session logging with resume capability, upload limits, and intelligent deduplication for mass uploads.
 
 ---
 
 ## Features
 
-* Mass Upload Support: Process single files, entire directories, or use JSON manifests for precise metadata control.
-* Automatic Preprocessing (Pixelfix): Transparent PNGs are automatically processed to prevent pixel bleeding. The script dynamically checks for transparency to save processing time and bypasses the tool if unnecessary.
-* Metadata Extraction: Reads internal file metadata (EXIF/Chunks) via Pillow to automatically populate asset descriptions.
-* State Recovery & Resume: Built-in error handling allows the script to pause gracefully on network failures (auto-stops after 3 consecutive errors) or manual interruption (Ctrl+C). Resuming is possible via the start index parameter.
-* Deduplication: Tracks file hashes in `upload_history.json` to prevent uploading the same asset multiple times.
-* Auto-Watcher: Optional watcher script to monitor a directory and automatically upload new files as they are added.
-* Graphical User Interface: Includes a modern dark-mode GUI for users who prefer a visual workflow.
+* **Terminal User Interface (TUI)**: Interactive, mouse-friendly terminal interface powered by Textual with form controls, live statistics, real-time logging, and queue controls.
+* **Encrypted Settings Storage**: Sensitive credentials (API Keys, User/Group IDs, preferences) are automatically encrypted on disk using Windows DPAPI (`%APPDATA%\easy-asset-upload\settings.enc`).
+* **Persistent `%APPDATA%` Storage**: All application state (`upload_history.json`, `run_sessions.json`, `settings.enc`, cached Pixelfix binaries) is stored in `%APPDATA%\easy-asset-upload` so data persists seamlessly across folders and updates.
+* **Automatic Updates**: Periodically checks git origin for new updates and automatically pulls and syncs the codebase on startup.
+* **Upload Batch Limits**: Limit the number of uploads per run (e.g. max 200 assets) and automatically pause upon reaching the limit.
+* **Session Logging & Resume**: Logs active runs into `%APPDATA%\easy-asset-upload\run_sessions.json`. On startup, detects unfinished runs and prompts *"Unfinished run detected! Do you want to resume?"*.
+* **Mass Upload Support**: Process single files, entire directories, or JSON manifests for precise metadata control.
+* **Automatic Preprocessing (Pixelfix)**: Transparent PNGs are processed to prevent pixel bleeding. Transparency is dynamically checked to save processing time.
+* **Metadata Extraction**: Extracts internal file metadata comments (EXIF/PNG chunks) via Pillow to automatically populate asset descriptions.
+* **Deduplication**: Hashes files and checks history to prevent uploading duplicate assets.
+* **Auto-Watcher**: Optional watcher script to monitor directories and automatically upload new assets.
 
 ---
 
@@ -23,83 +27,85 @@ A robust, automated toolchain for uploading assets (Images, Decals, Audio, Model
 Install the required Python packages:
 
 ```bash
-pip install requests rich python-dotenv watchdog Pillow customtkinter
+pip install textual rich requests python-dotenv watchdog Pillow
 ```
-
-Note: `requests`, `rich`, `Pillow` and `watchdog` are optional but highly recommended. The core uploader will fall back to standard libraries if they are missing, but features like rich console output, automatic EXIF extraction, and directory monitoring will be disabled.
 
 ### 2. Configuration (.env)
 
-Create a `.env` file in the root directory to store your configuration. This prevents you from needing to pass credentials via command line arguments every time.
+Create a `.env` file in the root directory to store your credentials:
 
 ```env
 ROBLOX_API_KEY=your_api_key_here
 USER_ID=12345678
 GROUP_ID=
-DISCORD_WEBHOOK_URL=[https://discord.com/api/webhooks/](https://discord.com/api/webhooks/)...
 ```
 
-### 3. API Key Setup
+### 3. API Key Permissions
 
-1. Navigate to the Roblox Creator Dashboard: [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
-2. Create a new API Key.
-3. Assign the following permissions under the "Assets API": `asset:read` and `asset:write`.
+1. Navigate to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
+2. Create a new API Key with `asset:read` and `asset:write` permissions under the **Assets API**.
+
+## Global Command Line Commands
+
+You can run the application directly from **any folder or terminal window** using any of these global commands:
+
+```bash
+# Launch interactive TUI from anywhere:
+easy-upload
+# or
+roblox-upload
+
+# Launch CLI uploader from anywhere:
+roblox-uploader --user-id 12345 --max-uploads 200 ./path/to/assets
+```
+
+---
+
+## Usage: Terminal User Interface (TUI)
+
+Launch the interactive Terminal UI:
+
+```bash
+easy-upload
+# or
+roblox-upload
+# or
+py -m tui
+```
+
+### TUI Capabilities
+- **Resume Prompt**: Automatically prompts to resume unfinished or paused runs upon startup.
+- **Form Controls**: Easily enter API Key, User/Group ID, Asset Type, Target Path, and Max Upload Limits.
+- **Toggles**: Enable/disable Pixelfix, Deduplication, Dry Runs, or Creator Store Distribution.
+- **Live Monitoring**: Displays real-time progress bar, uploaded/failed counters, and scrolling color log.
 
 ---
 
 ## Usage: Command Line Interface (CLI)
 
-The CLI tool (`uploader.py`) is designed for batch processing and CI/CD integration.
+The CLI tool (`uploader.py`) is ideal for automation and headless environments.
 
-### Basic Examples
+### Examples
 
-Upload a single file:
+#### Basic File Upload
 ```bash
 python uploader.py --user-id 12345 --asset-type Decal icon.png
 ```
 
-Upload an entire directory:
+#### Directory Upload with a 200 Upload Limit
 ```bash
-python uploader.py --user-id 12345 --asset-type Image ./icons/
+python uploader.py --user-id 12345 --asset-type Decal --max-uploads 200 ./watch_dir/
 ```
 
-Upload using a manifest file (for individual names/descriptions per file):
+#### Resume Latest Unfinished Run
 ```bash
-python uploader.py --user-id 12345 --manifest manifest.example.json
+python uploader.py --resume
 ```
 
-Resume an interrupted batch upload starting at the 150th image:
+#### Dry Run Test
 ```bash
-python uploader.py --user-id 12345 --start-index 150 ./icons/
+python uploader.py --user-id 12345 --dry-run --max-uploads 10 ./watch_dir/
 ```
-
-Upload for a Group:
-```bash
-python uploader.py --group-id 9876543 ./assets/
-```
-
----
-
-## Usage: Graphical User Interface (GUI)
-
-A Tkinter/CustomTkinter-based interface is available for a streamlined experience without the command line.
-
-To launch the GUI:
-```bash
-python gui.py
-```
-
-The GUI automatically loads your `.env` configuration and allows you to select input paths, asset types, and toggle preprocessing options visually.
-
----
-
-## Interruptions and Resuming
-
-The script is designed for high-volume uploads (e.g., 2000+ assets). 
-
-1. **Manual Stop:** Pressing `Ctrl+C` will trigger a graceful exit. The script will finish the current operation, save the results, and display a command to resume exactly where you stopped.
-2. **Auto-Stop:** If the script encounters 3 consecutive errors (e.g., due to internet loss), it will automatically stop to prevent the queue from filling with failures.
-3. **Resuming:** Use the `--start-index` argument followed by the index number provided in the summary of the previous run.
 
 ---
 
@@ -107,18 +113,20 @@ The script is designed for high-volume uploads (e.g., 2000+ assets).
 
 | Argument | Description |
 | :--- | :--- |
-| `input` | File or folder paths to upload (Required if no manifest is provided) |
+| `input` | File or folder paths to upload |
 | `--key` | Roblox API Key (defaults to `ROBLOX_API_KEY` env var) |
 | `--user-id` | Upload as User ID (defaults to `USER_ID` env var) |
 | `--group-id` | Upload as Group ID (defaults to `GROUP_ID` env var) |
-| `--asset-type` | Asset type to create (e.g., Decal, Audio, Model) |
-| `--manifest` | Path to a JSON manifest with asset metadata |
-| `--name` | Display name (only applies to single file uploads) |
+| `--asset-type` | Asset type (Decal, Image, Audio, Model, Video) |
+| `--max-uploads` | Limit the maximum number of assets uploaded in this session (e.g. 200) |
+| `--resume` | Resume the latest paused or unfinished run session |
+| `--manifest` | Path to a JSON manifest with individual asset metadata |
+| `--name` | Display name (for single file uploads) |
 | `--description` | Default description for uploaded assets |
-| `--no-pixelfix` | Disable automatic Pixelfix processing |
-| `--no-dedup` | Force upload even if the file hash is already in the history |
-| `--distribute` | Automatically configure the asset for the Creator Store |
-| `--start-index` | Skip files in the queue until this index is reached |
-| `--delay` | Pause between uploads in seconds to respect rate limits (Default: 1.2) |
-| `--dry-run` | Simulate the entire process without sending data to Roblox |
-| `--results` | Path to save the final upload results as a JSON file |
+| `--no-pixelfix` | Disable automatic Pixelfix preprocessing |
+| `--no-dedup` | Upload even if the file hash exists in history |
+| `--distribute` | Automatically configure asset on the Creator Store |
+| `--start-index` | Skip files until reaching this index |
+| `--delay` | Pause between uploads in seconds (Default: 1.2s) |
+| `--dry-run` | Simulate processing without sending requests to Roblox |
+| `--results` | Output JSON file path for final run results |

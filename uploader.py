@@ -15,6 +15,37 @@ from typing import Optional, List, Dict, Set
 import mimetypes
 from dotenv import load_dotenv
 
+def get_app_data_dir() -> Path:
+    if platform.system() == "Windows":
+        app_data = Path(os.environ.get("APPDATA", Path.home())) / "easy-asset-upload"
+    else:
+        app_data = Path.home() / ".config" / "easy-asset-upload"
+    app_data.mkdir(parents=True, exist_ok=True)
+    return app_data
+
+APP_DATA_DIR = get_app_data_dir()
+PROJECT_ROOT = Path(__file__).parent
+
+def ensure_executable_in_path():
+    """Ensures executable / scripts folder is in Windows User PATH automatically."""
+    if platform.system() != "Windows":
+        return
+    try:
+        import winreg
+        exe_dir = str(Path(sys.executable).parent.resolve())
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_ALL_ACCESS)
+        user_path, path_type = winreg.QueryValueEx(key, "Path")
+        if exe_dir.lower() not in user_path.lower():
+            new_path = user_path + ";" + exe_dir
+            winreg.SetValueEx(key, "Path", 0, path_type, new_path)
+            print(f"[PATH] Added '{exe_dir}' to User PATH! You can now run 'rbxsync' from any command prompt.")
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+# Load dotenv from AppData, project root, and CWD
+load_dotenv(APP_DATA_DIR / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 load_dotenv()
 
 # -- Optional rich output ------------------------------------------------------
@@ -49,17 +80,281 @@ try:
 except ImportError:
     HAS_PILLOW = False
 
+# Migrate legacy project-root files to AppData
+def migrate_legacy_data():
+    legacy_files = {
+        PROJECT_ROOT / "upload_history.json": APP_DATA_DIR / "upload_history.json",
+        PROJECT_ROOT / "run_sessions.json": APP_DATA_DIR / "run_sessions.json",
+        PROJECT_ROOT / ".env": APP_DATA_DIR / ".env",
+    }
+    for src, dst in legacy_files.items():
+        if src.exists() and not dst.exists():
+            try:
+                shutil.copy2(src, dst)
+            except Exception:
+                pass
+
+    legacy_pixelfix = PROJECT_ROOT / "tools" / "pixelfix-win-x64.exe"
+    dst_pixelfix = APP_DATA_DIR / "tools" / "pixelfix-win-x64.exe"
+    if legacy_pixelfix.exists() and not dst_pixelfix.exists():
+        try:
+            dst_pixelfix.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(legacy_pixelfix, dst_pixelfix)
+        except Exception:
+            pass
+
+migrate_legacy_data()
+
 # -- Constants -----------------------------------------------------------------
 PIXELFIX_URL = "https://github.com/Corecii/Transparent-Pixel-Fix/releases/download/1.0.0/pixelfix-win-x64.exe"
-PIXELFIX_BIN = Path(__file__).parent / "tools" / "pixelfix-win-x64.exe"
+PIXELFIX_BIN = APP_DATA_DIR / "tools" / "pixelfix-win-x64.exe"
 ROBLOX_ASSETS_API = "https://apis.roblox.com/assets/v1/assets"
 ROBLOX_OPS_API    = "https://apis.roblox.com/assets/v1/operations/{op_id}"
-HISTORY_FILE      = Path(__file__).parent / "upload_history.json"
+HISTORY_FILE      = APP_DATA_DIR / "upload_history.json"
+RUN_SESSIONS_FILE = APP_DATA_DIR / "run_sessions.json"
+UPDATE_CHECK_FILE = APP_DATA_DIR / "update_check.json"
+SETTINGS_FILE     = APP_DATA_DIR / "settings.enc"
 SUPPORTED_EXT     = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".mp3", ".ogg", ".wav", ".fbx", ".obj"}
 RATE_LIMIT_DELAY  = 1.2   # seconds between uploads (stay under Roblox limits)
 MAX_POLL_ATTEMPTS = 30
 POLL_INTERVAL     = 2.0   # seconds between operation polls
 PIXELFIX_TIMEOUT  = 15.0  # seconds before abandoning pixelfix on a single file
+
+# -- Encrypted Settings Storage (Windows DPAPI / Machine Key) -------------------
+if platform.system() == "Windows":
+    import ctypes
+    import ctypes.wintypes
+
+    class _DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
+
+    def _encrypt_bytes(data: bytes) -> bytes:
+        in_blob = _DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_byte)))
+        out_blob = _DATA_BLOB()
+        if ctypes.windll.crypt32.CryptProtectData(ctypes.byref(in_blob), "EasyAssetSettings", None, None, None, 0, ctypes.byref(out_blob)):
+            buf = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+            ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+            return buf
+        raise RuntimeError("Windows DPAPI encryption failed")
+
+    def _decrypt_bytes(data: bytes) -> bytes:
+        in_blob = _DATA_BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_byte)))
+        out_blob = _DATA_BLOB()
+        if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)):
+            buf = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+            ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+            return buf
+        raise RuntimeError("Windows DPAPI decryption failed")
+else:
+    def _get_key_bytes() -> bytes:
+        key_file = APP_DATA_DIR / ".key"
+        if not key_file.exists():
+            key_file.write_bytes(os.urandom(32))
+        return key_file.read_bytes()
+
+    def _encrypt_bytes(data: bytes) -> bytes:
+        key = _get_key_bytes()
+        return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
+
+    def _decrypt_bytes(data: bytes) -> bytes:
+        return _encrypt_bytes(data)
+
+def load_encrypted_settings() -> Dict:
+    if not SETTINGS_FILE.exists():
+        env_key = os.getenv("ROBLOX_API_KEY", "")
+        env_user = os.getenv("USER_ID", "")
+        env_group = os.getenv("GROUP_ID", "")
+        return {
+            "roblox_api_key": env_key,
+            "user_id": env_user,
+            "group_id": env_group,
+            "creator_type": "user" if env_user or not env_group else "group",
+            "creator_id": env_user or env_group,
+            "asset_type": "Decal",
+            "max_uploads": 200,
+            "dry_run": False,
+            "no_pixelfix": False,
+            "no_dedup": False,
+            "distribute": False,
+        }
+    try:
+        raw_enc = SETTINGS_FILE.read_bytes()
+        raw_dec = _decrypt_bytes(raw_enc)
+        return json.loads(raw_dec.decode("utf-8"))
+    except Exception:
+        return {}
+
+def save_encrypted_settings(settings: Dict):
+    try:
+        raw_json = json.dumps(settings, indent=2).encode("utf-8")
+        raw_enc = _encrypt_bytes(raw_json)
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_bytes(raw_enc)
+    except Exception as e:
+        print(f"[WARN] Failed to save encrypted settings: {e}")
+
+def get_setting(key: str, default=None):
+    s = load_encrypted_settings()
+    return s.get(key, default)
+
+def set_setting(key: str, value):
+    s = load_encrypted_settings()
+    s[key] = value
+    save_encrypted_settings(s)
+
+# -- Auto Updater ---------------------------------------------------------------
+def check_and_auto_update(force: bool = False) -> bool:
+    """
+    Periodically checks if a newer version is available from git origin and auto-updates.
+    Rate limited to once every 3 hours unless force=True.
+    """
+    now = time.time()
+    interval = 10800  # 3 hours
+
+    if not force and UPDATE_CHECK_FILE.exists():
+        try:
+            with open(UPDATE_CHECK_FILE, "r") as f:
+                data = json.load(f)
+                if now - data.get("last_check", 0) < interval:
+                    return False
+        except Exception:
+            pass
+
+    try:
+        UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(UPDATE_CHECK_FILE, "w") as f:
+            json.dump({"last_check": now}, f)
+    except Exception:
+        pass
+
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        return False
+
+    try:
+        res = subprocess.run(
+            ["git", "fetch"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=8
+        )
+        if res.returncode != 0:
+            return False
+
+        local_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+
+        remote_commit = subprocess.run(
+            ["git", "rev-parse", "@{u}"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True
+        ).stdout.strip()
+
+        if local_commit and remote_commit and local_commit != remote_commit:
+            print("\n[AUTO-UPDATE] 🚀 New version detected! Performing automatic update...")
+            pull_res = subprocess.run(
+                ["git", "pull"],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            if pull_res.returncode == 0:
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "-e", "."],
+                    cwd=str(PROJECT_ROOT),
+                    capture_output=True,
+                    text=True
+                )
+                print("[AUTO-UPDATE] ✔ Successfully updated to the latest version!\n")
+                return True
+            else:
+                print(f"[AUTO-UPDATE] [WARN] Update pull failed: {pull_res.stderr.strip()}")
+    except Exception:
+        pass
+
+    return False
+
+# -- Run Session Logging --------------------------------------------------------
+def load_run_sessions() -> Dict[str, Dict]:
+    if RUN_SESSIONS_FILE.exists():
+        try:
+            with open(RUN_SESSIONS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_run_sessions(sessions: Dict[str, Dict]):
+    RUN_SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(RUN_SESSIONS_FILE, "w") as f:
+        json.dump(sessions, f, indent=2)
+
+def create_run_session(
+    target_path: str,
+    asset_type: str,
+    creator_type: str,
+    creator_id: str,
+    max_uploads: Optional[int],
+    total_queued: int,
+    start_index: int = 1
+) -> str:
+    sessions = load_run_sessions()
+    run_id = f"run_{time.strftime('%Y%m%d_%H%M%S')}"
+    session = {
+        "run_id": run_id,
+        "start_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "target_path": str(target_path),
+        "asset_type": asset_type,
+        "creator_type": creator_type,
+        "creator_id": str(creator_id),
+        "max_uploads": max_uploads,
+        "total_queued": total_queued,
+        "last_index": start_index,
+        "uploaded_count": 0,
+        "failed_count": 0,
+        "status": "RUNNING",
+    }
+    sessions[run_id] = session
+    save_run_sessions(sessions)
+    return run_id
+
+def update_run_session(
+    run_id: str,
+    last_index: int,
+    uploaded_count: int,
+    failed_count: int,
+    status: str
+):
+    sessions = load_run_sessions()
+    if run_id in sessions:
+        session = sessions[run_id]
+        session["updated_time"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        session["last_index"] = last_index
+        session["uploaded_count"] = uploaded_count
+        session["failed_count"] = failed_count
+        session["status"] = status
+        save_run_sessions(sessions)
+
+def get_latest_unfinished_session() -> Optional[Dict]:
+    sessions = load_run_sessions()
+    unfinished = [
+        s for s in sessions.values()
+        if s.get("status") in ("PAUSED", "INTERRUPTED", "RUNNING")
+        and s.get("last_index", 1) <= s.get("total_queued", 0)
+    ]
+    if not unfinished:
+        return None
+    # Return most recently updated unfinished run
+    unfinished.sort(key=lambda x: x.get("updated_time", ""), reverse=True)
+    return unfinished[0]
 
 # -- History (deduplication) ---------------------------------------------------
 def load_history() -> Dict:
@@ -397,23 +692,28 @@ def process_and_upload(
     return record
 
 # -- CLI -----------------------------------------------------------------------
+VERSION = "3.0.0"
+
 def build_parser() -> argparse.ArgumentParser:
+    saved = load_encrypted_settings()
     p = argparse.ArgumentParser(
         prog="roblox_uploader",
         description="Upload assets to the Roblox Creator Store with Pixelfix preprocessing.",
     )
+    p.add_argument("-v", "--version", "-version", action="version", version=f"%(prog)s v{VERSION}")
+    
     auth = p.add_argument_group("Authentication")
-    auth.add_argument("--key", metavar="API_KEY", default=os.environ.get("ROBLOX_API_KEY"))
+    auth.add_argument("--key", metavar="API_KEY", default=os.environ.get("ROBLOX_API_KEY") or saved.get("roblox_api_key"))
     creator = auth.add_mutually_exclusive_group()
-    creator.add_argument("--user-id", metavar="ID", default=os.environ.get("USER_ID"))
-    creator.add_argument("--group-id", metavar="ID", default=os.environ.get("GROUP_ID"))
+    creator.add_argument("--user-id", metavar="ID", default=os.environ.get("USER_ID") or (saved.get("creator_id") if saved.get("creator_type") == "user" else None))
+    creator.add_argument("--group-id", metavar="ID", default=os.environ.get("GROUP_ID") or (saved.get("creator_id") if saved.get("creator_type") == "group" else None))
 
     inp = p.add_argument_group("Input")
     inp.add_argument("input", nargs="*")
     inp.add_argument("--manifest", metavar="FILE")
 
     meta = p.add_argument_group("Metadata")
-    meta.add_argument("--asset-type", default="Decal")
+    meta.add_argument("--asset-type", default=saved.get("asset_type", "Decal"))
     meta.add_argument("--name", metavar="NAME")
     meta.add_argument("--description", metavar="TEXT", default="Uploaded by roblox_uploader")
 
@@ -423,7 +723,9 @@ def build_parser() -> argparse.ArgumentParser:
     beh.add_argument("--distribute", action="store_true")
     beh.add_argument("--dry-run", action="store_true")
     beh.add_argument("--delay", type=float, default=RATE_LIMIT_DELAY)
-    beh.add_argument("--start-index", type=int, default=1, help="Start processing at this specific image index") # NEW FEATURE
+    beh.add_argument("--start-index", type=int, default=1, help="Start processing at this specific image index")
+    beh.add_argument("--max-uploads", type=int, default=saved.get("max_uploads", 200), help="Maximum number of uploads per run (e.g. 200)")
+    beh.add_argument("--resume", action="store_true", help="Resume from the latest unfinished session")
 
     out = p.add_argument_group("Output")
     out.add_argument("--results", metavar="FILE")
@@ -453,8 +755,43 @@ def collect_images(inputs: List[str]) -> List[Path]:
     return result
 
 def main():
+    # Check for automatic updates
+    check_and_auto_update()
+
+    # Preprocess single-dash -help and -version flags for convenience
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg.lower() in ("-help", "-h"):
+            sys.argv[i] = "--help"
+        elif arg.lower() in ("-version", "-v"):
+            sys.argv[i] = "--version"
+
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.key:
+        set_setting("roblox_api_key", args.key)
+    if args.user_id:
+        set_setting("creator_type", "user")
+        set_setting("creator_id", args.user_id)
+    elif args.group_id:
+        set_setting("creator_type", "group")
+        set_setting("creator_id", args.group_id)
+
+    if args.resume:
+        session = get_latest_unfinished_session()
+        if session:
+            print(f"[RESUME] Found unfinished run '{session['run_id']}' starting at index {session['last_index']}")
+            args.start_index = session["last_index"]
+            if not args.input and session.get("target_path"):
+                args.input = [session["target_path"]]
+            if session.get("asset_type"):
+                args.asset_type = session["asset_type"]
+            if session.get("max_uploads") and not args.max_uploads:
+                args.max_uploads = session["max_uploads"]
+            if session.get("creator_type") == "user" and not args.user_id:
+                args.user_id = session.get("creator_id")
+            elif session.get("creator_type") == "group" and not args.group_id:
+                args.group_id = session.get("creator_id")
 
     if not args.key:
         parser.error("--key or ROBLOX_API_KEY env var required.")
@@ -472,6 +809,8 @@ def main():
     print(f"Creator: {creator_type} {creator_id} | Type: {args.asset_type}")
     print(f"Pixelfix: {'OFF' if args.no_pixelfix else 'ON'} | Dry run: {'YES' if args.dry_run else 'NO'}")
     print(f"Metadata Extract: {'[ON]' if HAS_PILLOW else '[OFF] (pip install Pillow for metadata support)'}")
+    if args.max_uploads:
+        print(f"Upload Limit: Max {args.max_uploads} asset(s)")
     if args.start_index > 1:
         print(f"Resuming Queue: Starting from index {args.start_index}")
     print("============================================================\n")
@@ -501,6 +840,17 @@ def main():
 
     print(f"{len(tasks)} file(s) queued.\n")
 
+    target_desc = str(args.input[0]) if args.input else (args.manifest or "Unknown")
+    run_id = create_run_session(
+        target_path=target_desc,
+        asset_type=args.asset_type,
+        creator_type=creator_type,
+        creator_id=creator_id,
+        max_uploads=args.max_uploads,
+        total_queued=len(tasks),
+        start_index=args.start_index
+    )
+
     if not args.no_pixelfix and platform.system() == "Windows":
         download_pixelfix()
 
@@ -508,12 +858,19 @@ def main():
     failed  = []
     consecutive_errors = 0
     current_index = args.start_index
+    uploaded_in_session = 0
+    run_status = "COMPLETED"
 
     # Wrapper to catch KeyboardInterrupt (Ctrl+C) for graceful exit
     try:
         for i, task in enumerate(tasks, 1):
             if i < args.start_index:
                 continue # Skip files until we hit the start index
+
+            if args.max_uploads and uploaded_in_session >= args.max_uploads:
+                print(f"\n[LIMIT REACHED] Upload limit of {args.max_uploads} uploads reached for this session.")
+                run_status = "PAUSED"
+                break
 
             current_index = i
             path = task["path"]
@@ -535,6 +892,7 @@ def main():
                 )
                 if record:
                     results.append(record)
+                    uploaded_in_session += 1
                 
                 # Reset error counter on success
                 consecutive_errors = 0 
@@ -548,14 +906,24 @@ def main():
                 if consecutive_errors >= 3:
                     print(f"\n[CRITICAL] 3 consecutive errors detected. Stopping run to save progress.")
                     print(f"Please check your internet connection or Roblox API status.")
+                    run_status = "PAUSED"
                     break
 
-            if i < len(tasks):
+            update_run_session(run_id, current_index, len(results), len(failed), "RUNNING")
+
+            if i < len(tasks) and (not args.max_uploads or uploaded_in_session < args.max_uploads):
                 time.sleep(args.delay)
 
     except KeyboardInterrupt:
         print(f"\n\n[INFO] Upload manually paused by user (Ctrl+C).")
-        # Do not exit immediately, let it proceed to summary and saving!
+        run_status = "PAUSED"
+
+    if current_index >= len(tasks) and consecutive_errors < 3 and run_status != "PAUSED":
+        run_status = "COMPLETED"
+    else:
+        run_status = "PAUSED"
+
+    update_run_session(run_id, current_index, len(results), len(failed), run_status)
 
     print(f"\n{'='*60}")
     print("UPLOAD SUMMARY")
@@ -574,12 +942,11 @@ def main():
     print(f"{'='*60}")
     print(f"Done: {len(results)} uploaded, {len(failed)} failed.")
 
-    # Show the resume command if the script didn't finish the whole queue
-    if current_index < len(tasks) or consecutive_errors >= 3:
-        next_index = current_index if consecutive_errors >= 3 else current_index + 1
-        print(f"\n[RESUME INFO] The queue was not fully completed.")
-        print(f"To resume where you left off, add this parameter on your next run:")
-        print(f"  --start-index {next_index}")
+    if run_status == "PAUSED" or current_index < len(tasks):
+        next_index = current_index if (consecutive_errors >= 3 or run_status == "PAUSED") else current_index + 1
+        print(f"\n[RESUME INFO] Session '{run_id}' paused/incomplete at index {current_index}.")
+        print(f"To resume where you left off, run:")
+        print(f"  py uploader.py --resume")
 
     if args.results:
         out = {"uploaded": results, "failed": failed}

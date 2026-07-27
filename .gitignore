@@ -2,6 +2,11 @@
 __pycache__/
 *.pyc
 upload_history.json
+run_sessions.json
 tools/
 pixelfix_out/
 watch_dir/
+build/
+dist/
+*.spec
+*.egg-info/
