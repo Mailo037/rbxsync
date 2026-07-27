@@ -131,6 +131,25 @@ class AssetUploaderApp(App):
         margin-bottom: 1;
     }
 
+    #api_key_row {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #api_key_row Input {
+        margin-bottom: 0;
+    }
+
+    #btn_clear_key {
+        min-width: 9;
+        margin-left: 1;
+    }
+
+    #btn_toggle_key {
+        min-width: 6;
+        margin-left: 1;
+    }
+
     Select {
         margin-bottom: 1;
     }
@@ -202,12 +221,15 @@ class AssetUploaderApp(App):
             # Left Panel: Configuration Form
             with Container(id="config_panel"):
                 yield Label("🔑 Roblox API Key", classes="form_label")
-                yield Input(
-                    placeholder="Enter Roblox API Key",
-                    password=True,
-                    value=os.getenv("ROBLOX_API_KEY", ""),
-                    id="input_api_key"
-                )
+                with Horizontal(id="api_key_row"):
+                    yield Input(
+                        placeholder="Enter Roblox API Key",
+                        password=True,
+                        value=os.getenv("ROBLOX_API_KEY", ""),
+                        id="input_api_key"
+                    )
+                    yield Button("Clear", id="btn_clear_key", variant="warning")
+                    yield Button("👁️", id="btn_toggle_key", variant="default")
 
                 yield Label("👤 Creator Type & ID", classes="form_label")
                 yield Select(
@@ -239,6 +261,13 @@ class AssetUploaderApp(App):
                     placeholder="Path to asset file or folder",
                     value="watch_dir",
                     id="input_target_path"
+                )
+
+                yield Label("📍 Start Index (Start at file # e.g. 1 or 200)", classes="form_label")
+                yield Input(
+                    placeholder="Start asset number (default 1)",
+                    value="1",
+                    id="input_start_index"
                 )
 
                 yield Label("🛑 Max Upload Limit (0 = Unlimited, e.g. 200)", classes="form_label")
@@ -302,6 +331,8 @@ class AssetUploaderApp(App):
             self.query_one("#select_asset_type", Select).value = saved["asset_type"]
         if saved.get("max_uploads") is not None:
             self.query_one("#input_max_uploads", Input).value = str(saved["max_uploads"])
+        if saved.get("start_index") is not None:
+            self.query_one("#input_start_index", Input).value = str(saved["start_index"])
 
         # Check for unfinished sessions to prompt resume
         unfinished = get_latest_unfinished_session()
@@ -335,6 +366,13 @@ class AssetUploaderApp(App):
             self.start_upload_process()
         elif event.button.id == "btn_stop":
             self.stop_upload_process()
+        elif event.button.id == "btn_clear_key":
+            key_input = self.query_one("#input_api_key", Input)
+            key_input.value = ""
+            key_input.focus()
+        elif event.button.id == "btn_toggle_key":
+            key_input = self.query_one("#input_api_key", Input)
+            key_input.password = not key_input.password
 
     def start_upload_process(self, resume_index: int = 1) -> None:
         api_key = self.query_one("#input_api_key", Input).value.strip()
@@ -342,6 +380,7 @@ class AssetUploaderApp(App):
         creator_id = self.query_one("#input_creator_id", Input).value.strip()
         asset_type = str(self.query_one("#select_asset_type", Select).value)
         target_path_str = self.query_one("#input_target_path", Input).value.strip()
+        start_index_str = self.query_one("#input_start_index", Input).value.strip()
         max_uploads_str = self.query_one("#input_max_uploads", Input).value.strip()
 
         dry_run = self.query_one("#switch_dry_run", Switch).value
@@ -362,10 +401,18 @@ class AssetUploaderApp(App):
             return
 
         try:
+            user_start_index = int(start_index_str) if start_index_str and int(start_index_str) > 0 else 1
+        except ValueError:
+            log.write("[bold red][ERROR] Start index must be a positive integer (e.g. 1 or 200)[/bold red]")
+            return
+
+        try:
             max_uploads = int(max_uploads_str) if max_uploads_str and int(max_uploads_str) > 0 else None
         except ValueError:
             log.write("[bold red][ERROR] Max uploads must be an integer (e.g. 200)[/bold red]")
             return
+
+        effective_start_index = resume_index if resume_index > 1 else user_start_index
 
         # Save settings encrypted
         save_encrypted_settings({
@@ -373,6 +420,7 @@ class AssetUploaderApp(App):
             "creator_type": creator_type,
             "creator_id": creator_id,
             "asset_type": asset_type,
+            "start_index": user_start_index,
             "max_uploads": max_uploads,
             "dry_run": dry_run,
             "no_pixelfix": no_pixelfix,
@@ -393,7 +441,7 @@ class AssetUploaderApp(App):
             target=self.run_upload_worker,
             args=(
                 api_key, creator_type, creator_id, asset_type, target_path,
-                max_uploads, dry_run, no_pixelfix, no_dedup, distribute, resume_index
+                max_uploads, dry_run, no_pixelfix, no_dedup, distribute, effective_start_index
             ),
             daemon=True
         )
