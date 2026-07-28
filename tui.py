@@ -248,18 +248,22 @@ class AssetUploaderApp(App):
     .input_row {
         height: auto;
         margin-bottom: 1;
+        align: left middle;
     }
 
     .input_row Input {
+        width: 1fr;
         margin-bottom: 0;
     }
 
     .btn_clear {
+        width: 9;
         min-width: 9;
         margin-left: 1;
     }
 
     #btn_toggle_key {
+        width: 6;
         min-width: 6;
         margin-left: 1;
     }
