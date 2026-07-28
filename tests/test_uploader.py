@@ -222,6 +222,10 @@ class TestTUICore(unittest.TestCase):
         self.assertIsNotNone(modal)
         self.assertIsInstance(modal.history_data, dict)
 
+    def test_tui_app_instantiation(self):
+        app = tui.AssetUploaderApp()
+        self.assertIsNotNone(app)
+
 
 if __name__ == "__main__":
     unittest.main()

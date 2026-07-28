@@ -476,7 +476,7 @@ class AssetUploaderApp(App):
 
                 yield Button("🚀 INITIATE UPLOAD RUN", variant="primary", id="btn_start")
                 yield Button("⏸️ PAUSE / STOP RUN", variant="error", id="btn_stop", disabled=True)
-                yield Button("📜 VIEW UPLOAD HISTORY & ASSET IDs", variant="accent", id="btn_history")
+                yield Button("📜 VIEW UPLOAD HISTORY & ASSET IDs", variant="default", id="btn_history")
 
             # Right Panel: Statistics & Live Log
             with Vertical(id="right_panel"):
