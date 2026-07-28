@@ -171,6 +171,8 @@ def load_encrypted_settings() -> Dict:
             "creator_type": "user" if env_user or not env_group else "group",
             "creator_id": env_user or env_group,
             "asset_type": "Decal",
+            "target_path": "watch_dir",
+            "start_index": 1,
             "max_uploads": 200,
             "dry_run": False,
             "no_pixelfix": False,
@@ -650,49 +652,59 @@ def process_and_upload(
         print(f"  -> Processing image...")
         processed = run_pixelfix(image_path)
 
-    if dry_run:
-        print(f"  [DRY RUN] Would upload '{name}' from {processed}")
-        return {"dryRun": True, "file": str(image_path), "name": name}
+    try:
+        if dry_run:
+            print(f"  [DRY RUN] Would upload '{name}' from {processed}")
+            return {"dryRun": True, "file": str(image_path), "name": name}
 
-    print(f"  -> Uploading '{name}' as {asset_type}...")
-    op = upload_asset(api_key, processed, name, description, creator_type, creator_id, asset_type)
+        print(f"  -> Uploading '{name}' as {asset_type}...")
+        op = upload_asset(api_key, processed, name, description, creator_type, creator_id, asset_type)
 
-    op_path = op.get("path") or op.get("operationId")
-    if op_path:
-        print(f"  -> Polling operation...")
-        result = poll_operation(api_key, op_path)
-    else:
-        result = op
+        op_path = op.get("path") or op.get("operationId")
+        if op_path:
+            print(f"  -> Polling operation...")
+            result = poll_operation(api_key, op_path)
+        else:
+            result = op
 
-    asset_id = (
-        result.get("assetId")
-        or result.get("assetVersionId") 
-        or result.get("id")
-    )
-    if not asset_id:
-        print(f"  [WARN] No assetId in response")
+        asset_id = (
+            result.get("assetId")
+            or result.get("assetVersionId") 
+            or result.get("id")
+        )
+        if not asset_id:
+            print(f"  [WARN] No assetId in response")
 
-    if distribute and asset_id:
-        print("  -> Configuring Creator Store...")
-        set_creator_store_free(api_key, str(asset_id))
+        if distribute and asset_id:
+            print("  -> Configuring Creator Store...")
+            set_creator_store_free(api_key, str(asset_id))
 
-    record = {
-        "assetId": asset_id,
-        "name": name,
-        "file": str(image_path),
-        "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "fullResponse": result,
-    }
-    if not skip_dedup:
-        h = file_hash(image_path)
-        history[h] = record
-        save_history(history)
+        record = {
+            "assetId": asset_id,
+            "name": name,
+            "file": str(image_path),
+            "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "fullResponse": result,
+        }
+        if not skip_dedup:
+            h = file_hash(image_path)
+            history[h] = record
+            save_history(history)
 
-    print(f"  [OK] Done -> assetId={asset_id}")
-    return record
+        print(f"  [OK] Done -> assetId={asset_id}")
+        return record
+    finally:
+        if processed != image_path and processed.exists():
+            try:
+                processed.unlink()
+                parent_dir = processed.parent
+                if parent_dir.exists() and not any(parent_dir.iterdir()):
+                    parent_dir.rmdir()
+            except Exception:
+                pass
 
 # -- CLI -----------------------------------------------------------------------
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 def build_parser() -> argparse.ArgumentParser:
     saved = load_encrypted_settings()

@@ -61,7 +61,13 @@ class TestUploaderCore(unittest.TestCase):
                 "creator_type": "user",
                 "creator_id": "998877",
                 "asset_type": "Decal",
-                "max_uploads": 150
+                "target_path": "my_assets_folder",
+                "start_index": 5,
+                "max_uploads": 150,
+                "dry_run": True,
+                "no_pixelfix": True,
+                "no_dedup": False,
+                "distribute": True,
             }
             uploader.save_encrypted_settings(sample_settings)
             
@@ -72,7 +78,13 @@ class TestUploaderCore(unittest.TestCase):
             # Verify decrypt matches original settings
             loaded = uploader.load_encrypted_settings()
             self.assertEqual(loaded.get("roblox_api_key"), "secret_api_key_abc123")
+            self.assertEqual(loaded.get("target_path"), "my_assets_folder")
+            self.assertEqual(loaded.get("start_index"), 5)
             self.assertEqual(loaded.get("max_uploads"), 150)
+            self.assertTrue(loaded.get("dry_run"))
+            self.assertTrue(loaded.get("no_pixelfix"))
+            self.assertFalse(loaded.get("no_dedup"))
+            self.assertTrue(loaded.get("distribute"))
         finally:
             uploader.SETTINGS_FILE = orig_settings
 
@@ -152,6 +164,32 @@ class TestUploaderCore(unittest.TestCase):
         self.assertTrue(args.resume)
         self.assertEqual(args.input, ["file.png"])
 
+    def test_pixelfix_cleanup(self):
+        # Create a mock pixelfix_out file
+        pixelfix_dir = self.dummy_asset.parent / "pixelfix_out"
+        pixelfix_dir.mkdir(parents=True, exist_ok=True)
+        pixelfix_file = pixelfix_dir / self.dummy_asset.name
+        pixelfix_file.write_bytes(b"dummy pixelfix content")
+
+        with patch("uploader.run_pixelfix", return_value=pixelfix_file):
+            record = uploader.process_and_upload(
+                image_path=self.dummy_asset,
+                api_key="test_key",
+                creator_type="user",
+                creator_id="12345",
+                display_name="Clean Test",
+                description="Test",
+                skip_pixelfix=False,
+                skip_dedup=True,
+                distribute=False,
+                dry_run=True,
+                asset_type="Decal"
+            )
+            self.assertIsNotNone(record)
+            # Verify the pixelfix_out temp file was cleaned up automatically
+            self.assertFalse(pixelfix_file.exists())
+            self.assertFalse(pixelfix_dir.exists())
+
 
 class TestTUICore(unittest.TestCase):
     def test_tui_app_css_validation(self):
@@ -173,6 +211,16 @@ class TestTUICore(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     tui.main()
                 self.assertEqual(cm.exception.code, 0)
+
+    def test_copy_text_to_clipboard(self):
+        # Verify copy_text_to_clipboard runs without exception
+        res = tui.copy_text_to_clipboard("12345678")
+        self.assertIsInstance(res, bool)
+
+    def test_upload_history_modal_instantiation(self):
+        modal = tui.UploadHistoryModal()
+        self.assertIsNotNone(modal)
+        self.assertIsInstance(modal.history_data, dict)
 
 
 if __name__ == "__main__":

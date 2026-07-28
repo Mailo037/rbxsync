@@ -11,11 +11,13 @@ import threading
 from pathlib import Path
 from typing import Optional, List, Dict
 
+import subprocess
+import platform
 from dotenv import load_dotenv
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical, ScrollableContainer, Grid
 from textual.widgets import (
-    Header, Footer, Button, Input, Select, Switch, Label, Static, ProgressBar, RichLog
+    Header, Footer, Button, Input, Select, Switch, Label, Static, ProgressBar, RichLog, DataTable, TextArea
 )
 from textual.screen import ModalScreen
 
@@ -30,6 +32,8 @@ from uploader import (
     ensure_executable_in_path,
     load_encrypted_settings,
     save_encrypted_settings,
+    load_history,
+    save_history,
     APP_DATA_DIR,
     HAS_PILLOW,
     RATE_LIMIT_DELAY
@@ -38,6 +42,27 @@ from uploader import (
 PROJECT_ROOT = Path(__file__).parent
 load_dotenv(PROJECT_ROOT / ".env")
 load_dotenv()
+
+
+def copy_text_to_clipboard(text: str, app=None) -> bool:
+    copied = False
+    if app and hasattr(app, "copy_to_clipboard"):
+        try:
+            app.copy_to_clipboard(text)
+            copied = True
+        except Exception:
+            pass
+    if platform.system() == "Windows":
+        try:
+            subprocess.run("clip", input=text.encode("utf-16"), check=True)
+            copied = True
+        except Exception:
+            try:
+                subprocess.run("clip", input=text.encode("utf-8"), check=True)
+                copied = True
+            except Exception:
+                pass
+    return copied
 
 
 class ResumeSessionModal(ModalScreen[bool]):
@@ -72,6 +97,95 @@ class ResumeSessionModal(ModalScreen[bool]):
             self.dismiss(True)
         else:
             self.dismiss(False)
+
+
+class UploadHistoryModal(ModalScreen[None]):
+    """Modal dialog displaying upload history and copyable asset IDs list."""
+
+    def __init__(self):
+        super().__init__()
+        self.history_data: Dict = load_history()
+
+    def compose(self) -> ComposeResult:
+        total_items = len(self.history_data)
+        
+        asset_ids = []
+        for item in self.history_data.values():
+            if isinstance(item, dict):
+                aid = str(item.get("assetId", "")).strip()
+                if aid and aid != "Unknown" and not aid.startswith("DryRun"):
+                    asset_ids.append(aid)
+        
+        asset_ids_text = "\n".join(asset_ids)
+
+        with Container(id="history_modal_dialog"):
+            yield Label(f"📜 Roblox Asset Upload History ({total_items} items total)", id="history_modal_title")
+            
+            with Horizontal(id="history_tab_buttons"):
+                yield Button("📋 Detailed History Table", id="btn_view_table", variant="primary")
+                yield Button("🔢 Copyable Asset IDs List", id="btn_view_ids", variant="default")
+
+            with Container(id="history_table_container"):
+                yield DataTable(id="history_data_table")
+
+            with Container(id="history_ids_container", classes="hidden"):
+                yield Label("List of all Asset IDs (Copyable / Editable):", classes="form_label")
+                yield TextArea(asset_ids_text, id="text_asset_ids", read_only=False)
+
+            with Horizontal(id="history_action_buttons"):
+                yield Button("📋 Copy Asset IDs", id="btn_copy_ids", variant="success")
+                yield Button("💾 Export asset_ids.txt", id="btn_export_ids", variant="default")
+                yield Button("🗑️ Clear History", id="btn_clear_history", variant="error")
+                yield Button("Close", id="btn_close_history", variant="warning")
+
+    def on_mount(self) -> None:
+        table = self.query_one("#history_data_table", DataTable)
+        table.add_columns("Asset ID", "Name", "File Path", "Uploaded At")
+        
+        for item in reversed(list(self.history_data.values())):
+            if isinstance(item, dict):
+                asset_id = str(item.get("assetId", "N/A"))
+                name = str(item.get("name", "N/A"))
+                file_path = str(item.get("file", "N/A"))
+                uploaded_at = str(item.get("uploadedAt", "N/A"))
+                table.add_row(asset_id, name, file_path, uploaded_at)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn_view_table":
+            self.query_one("#history_table_container").remove_class("hidden")
+            self.query_one("#history_ids_container").add_class("hidden")
+            self.query_one("#btn_view_table", Button).variant = "primary"
+            self.query_one("#btn_view_ids", Button).variant = "default"
+        elif event.button.id == "btn_view_ids":
+            self.query_one("#history_table_container").add_class("hidden")
+            self.query_one("#history_ids_container").remove_class("hidden")
+            self.query_one("#btn_view_table", Button).variant = "default"
+            self.query_one("#btn_view_ids", Button).variant = "primary"
+        elif event.button.id == "btn_copy_ids":
+            text_area = self.query_one("#text_asset_ids", TextArea)
+            text_val = text_area.text.strip()
+            if text_val:
+                copy_text_to_clipboard(text_val, app=self.app)
+                self.notify("✔ Copied all Asset IDs to clipboard!", title="Clipboard")
+            else:
+                self.notify("No Asset IDs available to copy.", title="Clipboard", severity="warning")
+        elif event.button.id == "btn_export_ids":
+            text_area = self.query_one("#text_asset_ids", TextArea)
+            text_val = text_area.text.strip()
+            if text_val:
+                out_path = Path("asset_ids.txt")
+                out_path.write_text(text_val, encoding="utf-8")
+                self.notify(f"✔ Exported Asset IDs to {out_path.resolve()}", title="Export")
+            else:
+                self.notify("No Asset IDs available to export.", title="Export", severity="warning")
+        elif event.button.id == "btn_clear_history":
+            save_history({})
+            table = self.query_one("#history_data_table", DataTable)
+            table.clear()
+            self.query_one("#text_asset_ids", TextArea).text = ""
+            self.notify("🗑️ Upload history cleared.", title="History")
+        elif event.button.id == "btn_close_history":
+            self.dismiss(None)
 
 
 class AssetUploaderApp(App):
@@ -131,16 +245,16 @@ class AssetUploaderApp(App):
         margin-bottom: 1;
     }
 
-    #api_key_row {
+    .input_row {
         height: auto;
         margin-bottom: 1;
     }
 
-    #api_key_row Input {
+    .input_row Input {
         margin-bottom: 0;
     }
 
-    #btn_clear_key {
+    .btn_clear {
         min-width: 9;
         margin-left: 1;
     }
@@ -174,6 +288,11 @@ class AssetUploaderApp(App):
         margin-top: 1;
     }
 
+    #btn_history {
+        width: 100%;
+        margin-top: 1;
+    }
+
     #resume_modal_dialog {
         padding: 2 4;
         background: $panel;
@@ -181,6 +300,58 @@ class AssetUploaderApp(App):
         width: 60;
         height: auto;
         align: center middle;
+    }
+
+    #history_modal_dialog {
+        padding: 1 2;
+        background: $panel;
+        border: thick $accent;
+        width: 90%;
+        height: 85%;
+        align: center middle;
+    }
+
+    #history_modal_title {
+        text-style: bold;
+        color: $accent;
+        margin-bottom: 1;
+    }
+
+    #history_tab_buttons {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #history_tab_buttons Button {
+        margin-right: 1;
+    }
+
+    #history_table_container {
+        height: 1fr;
+        border: solid $primary;
+        margin-bottom: 1;
+    }
+
+    #history_ids_container {
+        height: 1fr;
+        margin-bottom: 1;
+    }
+
+    #history_ids_container TextArea {
+        height: 1fr;
+    }
+
+    #history_action_buttons {
+        height: auto;
+        align: center middle;
+    }
+
+    #history_action_buttons Button {
+        margin: 0 1;
+    }
+
+    .hidden {
+        display: none;
     }
 
     #modal_title {
@@ -213,6 +384,7 @@ class AssetUploaderApp(App):
         self.stop_requested = False
         self.active_run_id: Optional[str] = None
         self.resumed_session: Optional[Dict] = None
+        self._loading_settings = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -221,14 +393,14 @@ class AssetUploaderApp(App):
             # Left Panel: Configuration Form
             with Container(id="config_panel"):
                 yield Label("🔑 Roblox API Key", classes="form_label")
-                with Horizontal(id="api_key_row"):
+                with Horizontal(classes="input_row", id="api_key_row"):
                     yield Input(
                         placeholder="Enter Roblox API Key",
                         password=True,
                         value=os.getenv("ROBLOX_API_KEY", ""),
                         id="input_api_key"
                     )
-                    yield Button("Clear", id="btn_clear_key", variant="warning")
+                    yield Button("Clear", id="btn_clear_key", classes="btn_clear", variant="warning")
                     yield Button("👁️", id="btn_toggle_key", variant="default")
 
                 yield Label("👤 Creator Type & ID", classes="form_label")
@@ -237,11 +409,13 @@ class AssetUploaderApp(App):
                     value="user" if os.getenv("USER_ID") or not os.getenv("GROUP_ID") else "group",
                     id="select_creator_type"
                 )
-                yield Input(
-                    placeholder="Enter User or Group ID",
-                    value=os.getenv("USER_ID") or os.getenv("GROUP_ID", ""),
-                    id="input_creator_id"
-                )
+                with Horizontal(classes="input_row"):
+                    yield Input(
+                        placeholder="Enter User or Group ID",
+                        value=os.getenv("USER_ID") or os.getenv("GROUP_ID", ""),
+                        id="input_creator_id"
+                    )
+                    yield Button("Clear", id="btn_clear_creator_id", classes="btn_clear", variant="warning")
 
                 yield Label("📦 Asset Type", classes="form_label")
                 yield Select(
@@ -257,25 +431,31 @@ class AssetUploaderApp(App):
                 )
 
                 yield Label("📁 Target File or Folder", classes="form_label")
-                yield Input(
-                    placeholder="Path to asset file or folder",
-                    value="watch_dir",
-                    id="input_target_path"
-                )
+                with Horizontal(classes="input_row"):
+                    yield Input(
+                        placeholder="Path to asset file or folder",
+                        value="watch_dir",
+                        id="input_target_path"
+                    )
+                    yield Button("Clear", id="btn_clear_target_path", classes="btn_clear", variant="warning")
 
                 yield Label("📍 Start Index (Start at file # e.g. 1 or 200)", classes="form_label")
-                yield Input(
-                    placeholder="Start asset number (default 1)",
-                    value="1",
-                    id="input_start_index"
-                )
+                with Horizontal(classes="input_row"):
+                    yield Input(
+                        placeholder="Start asset number (default 1)",
+                        value="1",
+                        id="input_start_index"
+                    )
+                    yield Button("Clear", id="btn_clear_start_index", classes="btn_clear", variant="warning")
 
                 yield Label("🛑 Max Upload Limit (0 = Unlimited, e.g. 200)", classes="form_label")
-                yield Input(
-                    placeholder="Max uploads (e.g. 200)",
-                    value="200",
-                    id="input_max_uploads"
-                )
+                with Horizontal(classes="input_row"):
+                    yield Input(
+                        placeholder="Max uploads (e.g. 200)",
+                        value="200",
+                        id="input_max_uploads"
+                    )
+                    yield Button("Clear", id="btn_clear_max_uploads", classes="btn_clear", variant="warning")
 
                 yield Label("⚙️ Options", classes="form_label")
                 with Horizontal(classes="switch_container"):
@@ -296,6 +476,7 @@ class AssetUploaderApp(App):
 
                 yield Button("🚀 INITIATE UPLOAD RUN", variant="primary", id="btn_start")
                 yield Button("⏸️ PAUSE / STOP RUN", variant="error", id="btn_stop", disabled=True)
+                yield Button("📜 VIEW UPLOAD HISTORY & ASSET IDs", variant="accent", id="btn_history")
 
             # Right Panel: Statistics & Live Log
             with Vertical(id="right_panel"):
@@ -310,6 +491,58 @@ class AssetUploaderApp(App):
 
         yield Footer()
 
+    def save_current_settings(self) -> None:
+        if getattr(self, "_loading_settings", False):
+            return
+        try:
+            api_key = self.query_one("#input_api_key", Input).value.strip()
+            creator_type = str(self.query_one("#select_creator_type", Select).value)
+            creator_id = self.query_one("#input_creator_id", Input).value.strip()
+            asset_type = str(self.query_one("#select_asset_type", Select).value)
+            target_path = self.query_one("#input_target_path", Input).value.strip()
+            start_index_str = self.query_one("#input_start_index", Input).value.strip()
+            max_uploads_str = self.query_one("#input_max_uploads", Input).value.strip()
+
+            dry_run = self.query_one("#switch_dry_run", Switch).value
+            no_pixelfix = self.query_one("#switch_no_pixelfix", Switch).value
+            no_dedup = self.query_one("#switch_no_dedup", Switch).value
+            distribute = self.query_one("#switch_distribute", Switch).value
+
+            try:
+                start_index = int(start_index_str) if start_index_str and int(start_index_str) > 0 else 1
+            except ValueError:
+                start_index = 1
+
+            try:
+                max_uploads = int(max_uploads_str) if max_uploads_str and int(max_uploads_str) > 0 else 200
+            except ValueError:
+                max_uploads = 200
+
+            save_encrypted_settings({
+                "roblox_api_key": api_key,
+                "creator_type": creator_type,
+                "creator_id": creator_id,
+                "asset_type": asset_type,
+                "target_path": target_path,
+                "start_index": start_index,
+                "max_uploads": max_uploads,
+                "dry_run": dry_run,
+                "no_pixelfix": no_pixelfix,
+                "no_dedup": no_dedup,
+                "distribute": distribute,
+            })
+        except Exception:
+            pass
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self.save_current_settings()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        self.save_current_settings()
+
+    def on_switch_changed(self, event: Switch.Changed) -> None:
+        self.save_current_settings()
+
     def on_mount(self) -> None:
         log = self.query_one("#console_log", RichLog)
         log.write("[bold cyan]====================================================[/bold cyan]")
@@ -319,20 +552,35 @@ class AssetUploaderApp(App):
         log.write(f"Metadata Extraction: [green]AVAILABLE[/green]" if HAS_PILLOW else "Metadata Extraction: [yellow]OFF (Install Pillow)[/yellow]")
         log.write("[green]Encrypted Settings Loaded (%APPDATA%\\settings.enc)[/green]")
 
-        # Populate form fields with encrypted settings if available
-        saved = load_encrypted_settings()
-        if saved.get("roblox_api_key"):
-            self.query_one("#input_api_key", Input).value = saved["roblox_api_key"]
-        if saved.get("creator_id"):
-            self.query_one("#input_creator_id", Input).value = saved["creator_id"]
-        if saved.get("creator_type"):
-            self.query_one("#select_creator_type", Select).value = saved["creator_type"]
-        if saved.get("asset_type"):
-            self.query_one("#select_asset_type", Select).value = saved["asset_type"]
-        if saved.get("max_uploads") is not None:
-            self.query_one("#input_max_uploads", Input).value = str(saved["max_uploads"])
-        if saved.get("start_index") is not None:
-            self.query_one("#input_start_index", Input).value = str(saved["start_index"])
+        self._loading_settings = True
+        try:
+            # Populate form fields with encrypted settings if available
+            saved = load_encrypted_settings()
+            if saved.get("roblox_api_key"):
+                self.query_one("#input_api_key", Input).value = saved["roblox_api_key"]
+            if saved.get("creator_id"):
+                self.query_one("#input_creator_id", Input).value = saved["creator_id"]
+            if saved.get("creator_type"):
+                self.query_one("#select_creator_type", Select).value = saved["creator_type"]
+            if saved.get("asset_type"):
+                self.query_one("#select_asset_type", Select).value = saved["asset_type"]
+            if saved.get("target_path"):
+                self.query_one("#input_target_path", Input).value = str(saved["target_path"])
+            if saved.get("start_index") is not None:
+                self.query_one("#input_start_index", Input).value = str(saved["start_index"])
+            if saved.get("max_uploads") is not None:
+                self.query_one("#input_max_uploads", Input).value = str(saved["max_uploads"])
+
+            if saved.get("dry_run") is not None:
+                self.query_one("#switch_dry_run", Switch).value = bool(saved["dry_run"])
+            if saved.get("no_pixelfix") is not None:
+                self.query_one("#switch_no_pixelfix", Switch).value = bool(saved["no_pixelfix"])
+            if saved.get("no_dedup") is not None:
+                self.query_one("#switch_no_dedup", Switch).value = bool(saved["no_dedup"])
+            if saved.get("distribute") is not None:
+                self.query_one("#switch_distribute", Switch).value = bool(saved["distribute"])
+        finally:
+            self._loading_settings = False
 
         # Check for unfinished sessions to prompt resume
         unfinished = get_latest_unfinished_session()
@@ -373,6 +621,24 @@ class AssetUploaderApp(App):
         elif event.button.id == "btn_toggle_key":
             key_input = self.query_one("#input_api_key", Input)
             key_input.password = not key_input.password
+        elif event.button.id == "btn_clear_creator_id":
+            inp = self.query_one("#input_creator_id", Input)
+            inp.value = ""
+            inp.focus()
+        elif event.button.id == "btn_clear_target_path":
+            inp = self.query_one("#input_target_path", Input)
+            inp.value = ""
+            inp.focus()
+        elif event.button.id == "btn_clear_start_index":
+            inp = self.query_one("#input_start_index", Input)
+            inp.value = ""
+            inp.focus()
+        elif event.button.id == "btn_clear_max_uploads":
+            inp = self.query_one("#input_max_uploads", Input)
+            inp.value = ""
+            inp.focus()
+        elif event.button.id == "btn_history":
+            self.push_screen(UploadHistoryModal())
 
     def start_upload_process(self, resume_index: int = 1) -> None:
         api_key = self.query_one("#input_api_key", Input).value.strip()
@@ -420,6 +686,7 @@ class AssetUploaderApp(App):
             "creator_type": creator_type,
             "creator_id": creator_id,
             "asset_type": asset_type,
+            "target_path": target_path_str,
             "start_index": user_start_index,
             "max_uploads": max_uploads,
             "dry_run": dry_run,
@@ -592,7 +859,7 @@ class AssetUploaderApp(App):
         self.query_one("#btn_stop", Button).disabled = True
 
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 def main():
     ensure_executable_in_path()
