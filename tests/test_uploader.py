@@ -190,6 +190,30 @@ class TestUploaderCore(unittest.TestCase):
             self.assertFalse(pixelfix_file.exists())
             self.assertFalse(pixelfix_dir.exists())
 
+    def test_process_and_upload_5_retries(self):
+        mock_upload = MagicMock(side_effect=[Exception("503 Service Unavailable")] * 4 + [{"path": "op_123"}])
+        mock_poll = MagicMock(return_value={"assetId": "998877", "name": "Retry Success"})
+        
+        with patch("uploader.upload_asset", mock_upload), patch("uploader.poll_operation", mock_poll):
+            record = uploader.process_and_upload(
+                image_path=self.dummy_asset,
+                api_key="test_key",
+                creator_type="user",
+                creator_id="12345",
+                display_name="Retry Test",
+                description="Test",
+                skip_pixelfix=True,
+                skip_dedup=True,
+                distribute=False,
+                dry_run=False,
+                asset_type="Decal",
+                max_retries=5,
+                retry_delay=0.01
+            )
+            self.assertIsNotNone(record)
+            self.assertEqual(record.get("assetId"), "998877")
+            self.assertEqual(mock_upload.call_count, 5)
+
 
 class TestTUICore(unittest.TestCase):
     def test_tui_app_css_validation(self):

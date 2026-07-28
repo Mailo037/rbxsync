@@ -818,7 +818,9 @@ class AssetUploaderApp(App):
                     skip_dedup=no_dedup,
                     distribute=distribute,
                     dry_run=dry_run,
-                    asset_type=asset_type
+                    asset_type=asset_type,
+                    max_retries=5,
+                    log_callback=lambda msg: self.call_from_thread(log.write, msg)
                 )
                 if record:
                     uploaded_count += 1
@@ -828,14 +830,19 @@ class AssetUploaderApp(App):
             except Exception as e:
                 failed_count += 1
                 consecutive_errors += 1
-                self.call_from_thread(log.write, f"  [bold red]✘ Failed -> {e}[/bold red]")
-
-                if consecutive_errors >= 3:
-                    self.call_from_thread(
-                        log.write,
-                        "[bold red][CRITICAL] 3 consecutive failures detected. Auto-pausing session to save progress.[/bold red]"
-                    )
-                    break
+                self.call_from_thread(
+                    self.query_one("#stat_counts", Static).update,
+                    f"[b]Uploaded:[/b] {uploaded_count} | [b]Failed:[/b] {failed_count} | [b]Limit:[/b] {max_uploads or 'Unlimited'}"
+                )
+                self.call_from_thread(
+                    log.write,
+                    f"[bold red]✘ Failed after 5 retries: {e}[/bold red]"
+                )
+                self.call_from_thread(
+                    log.write,
+                    "[bold red][CRITICAL] Network/HTTP error: 5 retries failed. Auto-pausing session to save progress. Resume anytime![/bold red]"
+                )
+                break
 
             self.call_from_thread(
                 self.query_one("#stat_counts", Static).update,
@@ -847,7 +854,7 @@ class AssetUploaderApp(App):
             if i < total_queued and (not max_uploads or uploaded_count < max_uploads) and not self.stop_requested:
                 time.sleep(RATE_LIMIT_DELAY)
 
-        final_status = "COMPLETED" if (current_index >= total_queued and not self.stop_requested and consecutive_errors < 3) else "PAUSED"
+        final_status = "COMPLETED" if (current_index >= total_queued and not self.stop_requested and consecutive_errors == 0) else "PAUSED"
         update_run_session(run_id, current_index, uploaded_count, failed_count, final_status)
 
         self.call_from_thread(self.finish_upload_worker, final_status)

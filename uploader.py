@@ -617,6 +617,9 @@ def load_manifest(manifest_path: Path) -> List[Dict]:
     return data if isinstance(data, list) else data.get("assets", [])
 
 # -- Core upload logic ---------------------------------------------------------
+MAX_RETRIES = 5
+RETRY_DELAY = 2.0  # seconds base retry delay
+
 def process_and_upload(
     image_path: Path,
     api_key: str,
@@ -629,7 +632,32 @@ def process_and_upload(
     distribute: bool,
     dry_run: bool,
     asset_type: str = "Decal",
+    max_retries: int = MAX_RETRIES,
+    retry_delay: float = RETRY_DELAY,
+    log_callback: Optional[callable] = None,
 ) -> Optional[Dict]:
+
+    def _log(msg: str):
+        if log_callback:
+            log_callback(msg)
+        elif RICH:
+            try:
+                console.print(msg)
+            except Exception:
+                try:
+                    safe_msg = msg.encode("ascii", errors="ignore").decode("ascii")
+                    print(safe_msg)
+                except Exception:
+                    pass
+        else:
+            try:
+                print(msg)
+            except Exception:
+                try:
+                    safe_msg = msg.encode("ascii", errors="ignore").decode("ascii")
+                    print(safe_msg)
+                except Exception:
+                    pass
 
     history = load_history()
 
@@ -637,7 +665,7 @@ def process_and_upload(
         h = file_hash(image_path)
         if h in history:
             prev = history[h]
-            print(f"  [SKIP] {image_path.name} (already uploaded as assetId={prev['assetId']})")
+            _log(f"  [SKIP] {image_path.name} (already uploaded as assetId={prev['assetId']})")
             return prev
 
     name = display_name or image_path.stem.replace("_", " ").replace("-", " ").title()
@@ -645,54 +673,68 @@ def process_and_upload(
     extracted_comment = get_image_comment(image_path)
     if extracted_comment:
         description = extracted_comment
-        print(f"  [INFO] Found metadata comment: '{description}'")
+        _log(f"  [INFO] Found metadata comment: '{description}'")
 
     processed = image_path
     if not skip_pixelfix and image_path.suffix.lower() == ".png":
-        print(f"  -> Processing image...")
+        _log(f"  -> Processing image...")
         processed = run_pixelfix(image_path)
 
     try:
         if dry_run:
-            print(f"  [DRY RUN] Would upload '{name}' from {processed}")
+            _log(f"  [DRY RUN] Would upload '{name}' from {processed}")
             return {"dryRun": True, "file": str(image_path), "name": name}
 
-        print(f"  -> Uploading '{name}' as {asset_type}...")
-        op = upload_asset(api_key, processed, name, description, creator_type, creator_id, asset_type)
+        last_exception = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                _log(f"  -> Uploading '{name}' as {asset_type} (attempt {attempt}/{max_retries})...")
+                op = upload_asset(api_key, processed, name, description, creator_type, creator_id, asset_type)
 
-        op_path = op.get("path") or op.get("operationId")
-        if op_path:
-            print(f"  -> Polling operation...")
-            result = poll_operation(api_key, op_path)
-        else:
-            result = op
+                op_path = op.get("path") or op.get("operationId")
+                if op_path:
+                    _log(f"  -> Polling operation...")
+                    result = poll_operation(api_key, op_path)
+                else:
+                    result = op
 
-        asset_id = (
-            result.get("assetId")
-            or result.get("assetVersionId") 
-            or result.get("id")
-        )
-        if not asset_id:
-            print(f"  [WARN] No assetId in response")
+                asset_id = (
+                    result.get("assetId")
+                    or result.get("assetVersionId") 
+                    or result.get("id")
+                )
+                if not asset_id:
+                    _log(f"  [WARN] No assetId in response")
 
-        if distribute and asset_id:
-            print("  -> Configuring Creator Store...")
-            set_creator_store_free(api_key, str(asset_id))
+                if distribute and asset_id:
+                    _log("  -> Configuring Creator Store...")
+                    set_creator_store_free(api_key, str(asset_id))
 
-        record = {
-            "assetId": asset_id,
-            "name": name,
-            "file": str(image_path),
-            "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "fullResponse": result,
-        }
-        if not skip_dedup:
-            h = file_hash(image_path)
-            history[h] = record
-            save_history(history)
+                record = {
+                    "assetId": asset_id,
+                    "name": name,
+                    "file": str(image_path),
+                    "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "fullResponse": result,
+                }
+                if not skip_dedup:
+                    h = file_hash(image_path)
+                    history[h] = record
+                    save_history(history)
 
-        print(f"  [OK] Done -> assetId={asset_id}")
-        return record
+                _log(f"  [OK] Done -> assetId={asset_id}")
+                return record
+
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries:
+                    delay = retry_delay * (1.5 ** (attempt - 1))
+                    _log(f"  [bold yellow]⚠️ Network/HTTP error: {e}. Retrying item ({attempt}/{max_retries}) in {delay:.1f}s...[/bold yellow]")
+                    time.sleep(delay)
+                else:
+                    _log(f"  [bold red]✘ All {max_retries} retry attempts failed for '{image_path.name}': {e}[/bold red]")
+                    raise last_exception
+
     finally:
         if processed != image_path and processed.exists():
             try:
@@ -914,12 +956,10 @@ def main():
                 failed.append({"file": str(path), "error": str(e), "index": i})
                 consecutive_errors += 1
 
-                # Auto-stop if the internet goes down or API is completely broken
-                if consecutive_errors >= 3:
-                    print(f"\n[CRITICAL] 3 consecutive errors detected. Stopping run to save progress.")
-                    print(f"Please check your internet connection or Roblox API status.")
-                    run_status = "PAUSED"
-                    break
+                print(f"\n[CRITICAL] Network/HTTP error: 5 retries failed for '{path.name}'. Auto-pausing session to save progress.")
+                print(f"Please check your internet connection or Roblox API status. You can resume anytime using --resume.")
+                run_status = "PAUSED"
+                break
 
             update_run_session(run_id, current_index, len(results), len(failed), "RUNNING")
 
