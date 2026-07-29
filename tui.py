@@ -882,6 +882,8 @@ class AssetUploaderApp(App):
             )
             self.call_from_thread(progress_bar.update, progress=i)
 
+            self.call_from_thread(log.write, f"[{i}/{total_queued}] Processing '{filename}'...")
+
             try:
                 record = process_and_upload(
                     image_path=img_path,
