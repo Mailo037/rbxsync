@@ -635,9 +635,12 @@ def process_and_upload(
     max_retries: int = MAX_RETRIES,
     retry_delay: float = RETRY_DELAY,
     log_callback: Optional[callable] = None,
+    verbose: bool = False,
 ) -> Optional[Dict]:
 
-    def _log(msg: str):
+    def _log(msg: str, is_verbose_step: bool = False):
+        if is_verbose_step and not verbose:
+            return
         if log_callback:
             log_callback(msg)
         elif RICH:
@@ -673,11 +676,11 @@ def process_and_upload(
     extracted_comment = get_image_comment(image_path)
     if extracted_comment:
         description = extracted_comment
-        _log(f"  [INFO] Found metadata comment: '{description}'")
+        _log(f"  [INFO] Found metadata comment: '{description}'", is_verbose_step=True)
 
     processed = image_path
     if not skip_pixelfix and image_path.suffix.lower() == ".png":
-        _log(f"  -> Processing image...")
+        _log(f"  -> Processing image...", is_verbose_step=True)
         processed = run_pixelfix(image_path)
 
     try:
@@ -688,12 +691,12 @@ def process_and_upload(
         last_exception = None
         for attempt in range(1, max_retries + 1):
             try:
-                _log(f"  -> Uploading '{name}' as {asset_type} (attempt {attempt}/{max_retries})...")
+                _log(f"  -> Uploading '{name}' as {asset_type} (attempt {attempt}/{max_retries})...", is_verbose_step=True)
                 op = upload_asset(api_key, processed, name, description, creator_type, creator_id, asset_type)
 
                 op_path = op.get("path") or op.get("operationId")
                 if op_path:
-                    _log(f"  -> Polling operation...")
+                    _log(f"  -> Polling operation...", is_verbose_step=True)
                     result = poll_operation(api_key, op_path)
                 else:
                     result = op
@@ -707,7 +710,7 @@ def process_and_upload(
                     _log(f"  [WARN] No assetId in response")
 
                 if distribute and asset_id:
-                    _log("  -> Configuring Creator Store...")
+                    _log("  -> Configuring Creator Store...", is_verbose_step=True)
                     set_creator_store_free(api_key, str(asset_id))
 
                 record = {
@@ -722,7 +725,7 @@ def process_and_upload(
                     history[h] = record
                     save_history(history)
 
-                _log(f"  [OK] Done -> assetId={asset_id}")
+                _log(f"  [OK] Done -> assetId={asset_id}", is_verbose_step=True)
                 return record
 
             except Exception as e:

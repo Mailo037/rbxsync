@@ -246,6 +246,23 @@ class TestTUICore(unittest.TestCase):
         self.assertIsNotNone(modal)
         self.assertIsInstance(modal.history_data, dict)
 
+    def test_upload_history_modal_separator_and_deletion(self):
+        modal = tui.UploadHistoryModal()
+        modal.history_data = {
+            "hash1": {"assetId": "111", "name": "Item 1"},
+            "hash2": {"assetId": "222", "name": "Item 2"},
+            "hash3": {"assetId": "333", "name": "Item 3"},
+        }
+        
+        # Default newline separator
+        formatted = modal.get_formatted_ids()
+        self.assertEqual(formatted, "111\n222\n333")
+        
+        # Test item deletion
+        del modal.history_data["hash2"]
+        formatted_after_del = modal.get_formatted_ids()
+        self.assertEqual(formatted_after_del, "111\n333")
+
     def test_tui_app_instantiation(self):
         app = tui.AssetUploaderApp()
         self.assertIsNotNone(app)

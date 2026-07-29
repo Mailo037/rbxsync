@@ -100,23 +100,46 @@ class ResumeSessionModal(ModalScreen[bool]):
 
 
 class UploadHistoryModal(ModalScreen[None]):
-    """Modal dialog displaying upload history and copyable asset IDs list."""
+    """Modal dialog displaying upload history, selectable separators, and copyable asset IDs list."""
 
     def __init__(self):
         super().__init__()
         self.history_data: Dict = load_history()
 
-    def compose(self) -> ComposeResult:
-        total_items = len(self.history_data)
-        
+    def get_formatted_ids(self) -> str:
+        try:
+            sep_choice = str(self.query_one("#select_separator", Select).value)
+        except Exception:
+            sep_choice = "newline"
+
+        sep_map = {
+            "newline": "\n",
+            "comma_space": ", ",
+            "comma": ",",
+            "dot_space": ". ",
+            "semicolon": "; ",
+            "space": " ",
+        }
+        delimiter = sep_map.get(sep_choice, "\n")
+
         asset_ids = []
         for item in self.history_data.values():
             if isinstance(item, dict):
                 aid = str(item.get("assetId", "")).strip()
                 if aid and aid != "Unknown" and not aid.startswith("DryRun"):
                     asset_ids.append(aid)
-        
-        asset_ids_text = "\n".join(asset_ids)
+
+        return delimiter.join(asset_ids)
+
+    def update_ids_text(self) -> None:
+        formatted = self.get_formatted_ids()
+        try:
+            self.query_one("#text_asset_ids", TextArea).text = formatted
+        except Exception:
+            pass
+
+    def compose(self) -> ComposeResult:
+        total_items = len(self.history_data)
 
         with Container(id="history_modal_dialog"):
             yield Label(f"📜 Roblox Asset Upload History ({total_items} items total)", id="history_modal_title")
@@ -124,22 +147,37 @@ class UploadHistoryModal(ModalScreen[None]):
             with Horizontal(id="history_tab_buttons"):
                 yield Button("📋 Detailed History Table", id="btn_view_table", variant="primary")
                 yield Button("🔢 Copyable Asset IDs List", id="btn_view_ids", variant="default")
+                yield Label(" Separator: ", classes="form_label")
+                yield Select(
+                    [
+                        ("Nächste Zeile / Newline (\\n)", "newline"),
+                        ("Komma + Leerzeichen (, )", "comma_space"),
+                        ("Komma (,)", "comma"),
+                        ("Punkt + Leerzeichen (. )", "dot_space"),
+                        ("Semicolon (; )", "semicolon"),
+                        ("Leerzeichen ( )", "space"),
+                    ],
+                    value="newline",
+                    id="select_separator"
+                )
 
             with Container(id="history_table_container"):
                 yield DataTable(id="history_data_table")
 
             with Container(id="history_ids_container", classes="hidden"):
                 yield Label("List of all Asset IDs (Copyable / Editable):", classes="form_label")
-                yield TextArea(asset_ids_text, id="text_asset_ids", read_only=False)
+                yield TextArea("", id="text_asset_ids", read_only=False)
 
             with Horizontal(id="history_action_buttons"):
                 yield Button("📋 Copy Asset IDs", id="btn_copy_ids", variant="success")
+                yield Button("🗑️ Remove Selected Item", id="btn_remove_selected", variant="warning")
                 yield Button("💾 Export asset_ids.txt", id="btn_export_ids", variant="default")
-                yield Button("🗑️ Clear History", id="btn_clear_history", variant="error")
-                yield Button("Close", id="btn_close_history", variant="warning")
+                yield Button("🗑️ Clear All History", id="btn_clear_history", variant="error")
+                yield Button("Close", id="btn_close_history", variant="default")
 
     def on_mount(self) -> None:
         table = self.query_one("#history_data_table", DataTable)
+        table.cursor_type = "row"
         table.add_columns("Asset ID", "Name", "File Path", "Uploaded At")
         
         for item in reversed(list(self.history_data.values())):
@@ -149,6 +187,12 @@ class UploadHistoryModal(ModalScreen[None]):
                 file_path = str(item.get("file", "N/A"))
                 uploaded_at = str(item.get("uploadedAt", "N/A"))
                 table.add_row(asset_id, name, file_path, uploaded_at)
+
+        self.update_ids_text()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "select_separator":
+            self.update_ids_text()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_view_table":
@@ -166,7 +210,7 @@ class UploadHistoryModal(ModalScreen[None]):
             text_val = text_area.text.strip()
             if text_val:
                 copy_text_to_clipboard(text_val, app=self.app)
-                self.notify("✔ Copied all Asset IDs to clipboard!", title="Clipboard")
+                self.notify("✔ Copied Asset IDs to clipboard!", title="Clipboard")
             else:
                 self.notify("No Asset IDs available to copy.", title="Clipboard", severity="warning")
         elif event.button.id == "btn_export_ids":
@@ -178,8 +222,42 @@ class UploadHistoryModal(ModalScreen[None]):
                 self.notify(f"✔ Exported Asset IDs to {out_path.resolve()}", title="Export")
             else:
                 self.notify("No Asset IDs available to export.", title="Export", severity="warning")
+        elif event.button.id == "btn_remove_selected":
+            table = self.query_one("#history_data_table", DataTable)
+            if table.row_count > 0 and table.cursor_row is not None:
+                try:
+                    row_idx = table.cursor_row
+                    row_data = table.get_row_at(row_idx)
+                    removed_asset_id = str(row_data[0])
+
+                    keys_to_delete = [
+                        k for k, v in self.history_data.items()
+                        if isinstance(v, dict) and str(v.get("assetId")) == removed_asset_id
+                    ]
+                    for k in keys_to_delete:
+                        del self.history_data[k]
+
+                    save_history(self.history_data)
+
+                    table.clear()
+                    for item in reversed(list(self.history_data.values())):
+                        if isinstance(item, dict):
+                            table.add_row(
+                                str(item.get("assetId", "N/A")),
+                                str(item.get("name", "N/A")),
+                                str(item.get("file", "N/A")),
+                                str(item.get("uploadedAt", "N/A"))
+                            )
+
+                    self.update_ids_text()
+                    self.notify(f"🗑️ Removed Asset ID {removed_asset_id} from history.", title="History")
+                except Exception as e:
+                    self.notify(f"Could not remove item: {e}", title="History Error", severity="error")
+            else:
+                self.notify("Please select a row in the history table first.", title="Selection Required", severity="warning")
         elif event.button.id == "btn_clear_history":
             save_history({})
+            self.history_data = {}
             table = self.query_one("#history_data_table", DataTable)
             table.clear()
             self.query_one("#text_asset_ids", TextArea).text = ""
@@ -803,8 +881,6 @@ class AssetUploaderApp(App):
                 f"[b]Queue Progress:[/b] {i} / {total_queued}"
             )
             self.call_from_thread(progress_bar.update, progress=i)
-
-            self.call_from_thread(log.write, f"[{i}/{total_queued}] Processing '{filename}'...")
 
             try:
                 record = process_and_upload(
