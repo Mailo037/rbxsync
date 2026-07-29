@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="rbxsync",
-    version="3.1.0",
+    version="3.2.0",
     description="RBXSync - Roblox Creator Store Asset Synchronization Tool & Textual TUI",
     py_modules=["uploader", "tui", "gui", "watcher"],
     install_requires=[

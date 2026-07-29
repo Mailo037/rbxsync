@@ -150,12 +150,12 @@ class UploadHistoryModal(ModalScreen[None]):
                 yield Label(" Separator: ", classes="form_label")
                 yield Select(
                     [
-                        ("Nächste Zeile / Newline (\\n)", "newline"),
-                        ("Komma + Leerzeichen (, )", "comma_space"),
-                        ("Komma (,)", "comma"),
-                        ("Punkt + Leerzeichen (. )", "dot_space"),
+                        ("Newline (\\n)", "newline"),
+                        ("Comma + Space (, )", "comma_space"),
+                        ("Comma (,)", "comma"),
+                        ("Dot + Space (. )", "dot_space"),
                         ("Semicolon (; )", "semicolon"),
-                        ("Leerzeichen ( )", "space"),
+                        ("Space ( )", "space"),
                     ],
                     value="newline",
                     id="select_separator"
@@ -628,7 +628,7 @@ class AssetUploaderApp(App):
     def on_mount(self) -> None:
         log = self.query_one("#console_log", RichLog)
         log.write("[bold cyan]====================================================[/bold cyan]")
-        log.write("[bold cyan] ASSET_CORE TERMINAL TUI v3.0 INITIALIZED [/bold cyan]")
+        log.write("[bold cyan] ASSET_CORE TERMINAL TUI v3.2.0 INITIALIZED [/bold cyan]")
         log.write("[bold cyan]====================================================[/bold cyan]")
         log.write(f"AppData Directory: [green]{APP_DATA_DIR}[/green]")
         log.write(f"Metadata Extraction: [green]AVAILABLE[/green]" if HAS_PILLOW else "Metadata Extraction: [yellow]OFF (Install Pillow)[/yellow]")
@@ -946,7 +946,7 @@ class AssetUploaderApp(App):
         self.query_one("#btn_stop", Button).disabled = True
 
 
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 
 def main():
     ensure_executable_in_path()
